@@ -1,0 +1,5 @@
+import {cookies} from 'next/headers';
+import {randomBytes,createHash} from 'node:crypto';
+import {config,scope,seal,options,json} from '../../../../lib/outlook';
+export const runtime='nodejs';
+export async function POST(req:Request){try{const cfg=config();if(req.headers.get('origin')!==cfg.origin)return json({error:'Invalid origin'},403);const verifier=randomBytes(32).toString('base64url'),state=randomBytes(32).toString('base64url');(await cookies()).set('relay_ms_flow',seal({state,verifier,expires:Date.now()+600000},'flow'),options(600));const u=new URL('https://login.microsoftonline.com/common/oauth2/v2.0/authorize');u.search=new URLSearchParams({client_id:cfg.clientId,response_type:'code',redirect_uri:cfg.redirect,response_mode:'query',scope,state,code_challenge:createHash('sha256').update(verifier).digest('base64url'),code_challenge_method:'S256',prompt:'select_account'}).toString();return Response.redirect(u,303)}catch{return json({error:'Microsoft connection is not configured. See the deployment guide.'},503)}}
