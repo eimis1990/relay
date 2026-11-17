@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
     "typecheck": "tsc --noEmit",
-    "test": "node tests/outlook-boundaries.mjs"
+    "test": "node tests/outlook-boundaries.mjs && node tests/workspace-boundaries.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.31.0",

@@ -8,19 +8,19 @@ Node 22.13+; `npm ci`, then `npm run dev`. Open http://localhost:3000. Copy `.en
 
 ## Current functionality
 
-- Responsive website and four-step client brief with local draft persistence.
+- Responsive website and four-step client brief with persistent, authenticated Supabase storage on Vercel and a localhost-only preview fallback.
 - Portal overview, connection setup screens and help.
 - Microsoft OAuth authorization-code flow with PKCE/state, delegated `User.Read` and `Mail.Read`, server-side account allowlist, authenticated-encryption session cookies and no refresh token.
 - Read latest 25 messages from the connected user's own Inbox (sender, subject, date, preview and safe Outlook link). Only GET requests to Microsoft Graph; reading does not mark messages read.
 - Sessions expire after at most one hour. Reconnect to continue. Disconnect clears local browser session; revoke the application's consent in Microsoft to remove permission entirely.
 
-**Not implemented:** automatic sorting/labeling, background polling, full-body reader, attachments, shared mailboxes, Google OAuth/Sheets writes, Telegram pairing, billing, hosted questionnaire storage, multi-client organization membership. Account setup details are preferences, not connected accounts.
+**Not implemented:** automatic sorting/labeling, background polling, full-body reader, attachments, shared mailboxes, Google OAuth/Sheets writes, Telegram pairing, billing and shared organization membership. Account setup details are preferences, not connected accounts.
 
 ## Deploy to Vercel
 
 Import `eimis1990/relay`. Framework: **Next.js**. Root directory: repository root. Build: `npm run build`. Keep the default Next.js output setting. Select Node 22 or newer supported by Vercel.
 
-The website can deploy without secrets. Microsoft connections stay disabled until all variables below are configured. Questionnaire saves deliberately fail closed in production until hosted auth/storage are implemented; local JSON files are not a Vercel database. The Outlook session and inbox reader are independent of that prototype storage and can work on Vercel after configuration.
+The website can deploy without secrets. Microsoft connections stay disabled until all variables below are configured. Hosted workspace saves require the database configuration below. The same verified Microsoft session opens the private workspace. Missing database configuration and failed authentication stop saves; Vercel never uses a local JSON file.
 
 ### Microsoft setup (one-time)
 
@@ -43,10 +43,22 @@ The website can deploy without secrets. Microsoft connections stay disabled unti
 
 Never paste secrets into the questionnaire or commit `.env.local`. Never prefix these variables with `NEXT_PUBLIC_`. Work accounts require an Exchange Online mailbox. Some personal account aliases differ from the primary Graph profile address; allow the primary account address if needed. Wrong state, expired session, missing config and unlisted accounts fail closed.
 
-## Local data
+## Persistent workspace storage
 
-`.local-data/workspace.json` is single-user development data only, excluded from Git. The API validates schema and same-origin writes and atomically replaces the file. Do not expose the dev server publicly. On Vercel, add a database and genuine tenant-scoped authentication before accepting client questionnaires. The Microsoft allowlist is an owner pilot safeguard, not a complete B2B authorization model.
+1. Use a dedicated Relay Supabase project. Apply `supabase/migrations/20261117120430_relay_workspaces.sql` through the migration tool or SQL editor once.
+2. Add **server-only** Vercel environment variables `SUPABASE_URL` (project URL) and `SUPABASE_SECRET_KEY` (a secret API key, `sb_secret_...`). Legacy service-role JWTs also work. Never use `NEXT_PUBLIC_` or expose these credentials to the browser.
+3. Redeploy. Sign in with an allowed Microsoft account, save a brief, reload, and confirm it persists.
+
+The API uses the stable Microsoft Graph profile ID from the encrypted session, never a client-submitted company, email or owner ID. Older sessions acquire the ID from Microsoft's `/me` endpoint. An email alias change does not create another workspace. Each ID owns one workspace in this pilot; shared teams, delegated membership and enterprise tenant administration are not implemented.
+
+The `relay_workspaces` table enables RLS and revokes access from browser roles (`anon` and `authenticated`). There are intentionally no browser RLS policies. Only the server role has SELECT/INSERT/UPDATE; every server read/update filters by the verified owner. The server secret bypasses RLS, so these owner checks are essential. Tokens, secrets and email contents are not stored in the workspace table. App-level tests cover owner spoofing and cross-account isolation.
+
+An opaque account-bound workspace ID also rejects stale-tab saves after switching Microsoft accounts in the same browser. Saves use a revision number and a conditional database UPDATE; stale tabs receive HTTP 409 instead of overwriting newer work. Reload to reconcile a conflict. Storage errors do not report success or fall back to ephemeral files. Sign-out clears this browser's session, not the database; reconnecting restores the workspace. Session expiry remains one hour and background processing remains disabled.
+
+### Local preview
+
+When no database is configured, `next dev` on loopback can save `.local-data/workspace.json` (single-user development only, excluded from Git). Do not expose this server publicly. Production builds require Microsoft authentication and the database even on loopback. Existing local preview files are not automatically uploaded to a person's cloud workspace.
 
 ## Verification
 
-`npm run build` runs the production build and TypeScript checks. `npm test` exercises authorization boundaries against a local production server without contacting Microsoft; it does not prove a real Microsoft login. Real end-to-end OAuth requires the configured Microsoft registration and user consent.
+`npm run build` runs the production build and TypeScript checks. `npm test` checks OAuth boundaries and workspace authorization, cross-account isolation, alias-stable ownership, revision conflicts, database failure handling and persistence across Next server restarts using a local mock PostgREST server. It does not contact Microsoft or prove real database RLS. Before declaring production ready, apply the migration, inspect database access controls, and test save/reload through the live Vercel portal.
