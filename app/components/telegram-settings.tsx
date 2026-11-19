@@ -1,8 +1,10 @@
 'use client';
 import {useEffect,useState} from 'react';
 import {Send,Check,RefreshCw,ExternalLink} from 'lucide-react';
-export default function TelegramSettings(){
+export default function TelegramSettings({onDirtyChange,onBusyChange}:{onDirtyChange?:(v:boolean)=>void;onBusyChange?:(v:boolean)=>void}={}){
  const [state,S]=useState<any>(null),[token,T]=useState(''),[link,L]=useState(''),[busy,B]=useState(false),[error,E]=useState(''),[notice,N]=useState(''),[dirty,D]=useState(false);
+ useEffect(()=>{onDirtyChange?.(dirty)},[dirty,onDirtyChange]);
+ useEffect(()=>{onBusyChange?.(busy)},[busy,onBusyChange]);
  async function load(){const r=await fetch('/api/telegram',{cache:'no-store'}),j=await r.json();if(!r.ok)throw Error(j.error);S(j)}
  useEffect(()=>{void load().catch(e=>E(e.message))},[]);
  async function action(action:string){B(true);E('');N('');try{const r=await fetch('/api/telegram',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,...(action==='connect'?{token}:{}),...(action==='preferences'?{enabled:state.enabled,preferences:state.preferences}:{})})}),j=await r.json();if(!r.ok)throw Error(j.error);if(j.link)L(j.link);if(action==='connect')T('');if(action==='confirm'||action==='disconnect')L('');await load();D(false);N(action==='test'?'Test notification sent.':action==='preferences'?'Notification preferences saved.':action==='confirm'?'Private chat linked. Notifications are enabled.':action==='disconnect'?'Telegram disconnected.':'Open your private link in Telegram, press Start, then check the connection here.')}catch(e:any){E(e.message)}finally{B(false)}}
