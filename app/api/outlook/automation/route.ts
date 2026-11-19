@@ -10,6 +10,6 @@ export async function POST(req:Request){try{if(req.headers.get('origin')!==confi
  if(p.data.action==='check')return json(await runMailbox(owner));
  if(p.data.action==='retry'){await db('relay_review_queue',{owner_id:'eq.'+owner,status:'eq.failed'},{method:'PATCH',body:JSON.stringify({status:'pending',attempts:0,available_at:new Date().toISOString(),last_error:null})});return json({ok:true})}
  if(p.data.action==='resume'){if(!a.refresh_cipher)return json({error:'Reconnect Outlook first.'},409);await setupScheduler()}
- const update=p.data.action==='disconnect'?{enabled:false,refresh_cipher:null,last_error:null}:p.data.action==='settings'?{...(p.data.language?{language:p.data.language}:{}),...(p.data.priorityRules!==undefined?{rules_cipher:seal(p.data.priorityRules,'rules:'+owner)}:{})}:{enabled:p.data.action==='resume'};
+ const update=p.data.action==='disconnect'?{enabled:false,refresh_cipher:null,last_error:null,category_enabled:false,category_permission:false,category_error:null}:p.data.action==='settings'?{...(p.data.language?{language:p.data.language}:{}),...(p.data.priorityRules!==undefined?{rules_cipher:seal(p.data.priorityRules,'rules:'+owner)}:{})}:{enabled:p.data.action==='resume'};
  await db('relay_mail_accounts',{owner_id:'eq.'+owner},{method:'PATCH',body:JSON.stringify(update)});return json({ok:true});
  }catch(e){return json({error:e instanceof ReviewError?e.message:'Could not update processing.'},e instanceof ReviewError?e.status:503)}}

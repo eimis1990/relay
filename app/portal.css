@@ -8,3 +8,5 @@
 @media(prefers-reduced-motion:reduce){.relay-app *,.relay-app *:before,.relay-app *:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 .relay-app details[open]>:not(summary){animation:r-enter .22s ease both}
 @media(prefers-reduced-motion:reduce){.relay-app details[open]>:not(summary){animation:none!important}}
+
+.relay-app .r-category-sync{margin:24px 0}.relay-app .r-category-sync>p{line-height:1.65}.relay-app .r-category-sync .review-consent{margin:18px 0}.relay-app .r-category-sync .r-chip-row{margin:18px 0}

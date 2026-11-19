@@ -26,5 +26,5 @@ export async function POST(req:Request){
     if(workflow)result.items=result.items.map(item=>applyWorkflow(item,workflow));
     if(parsed.data.source==='outlook'&&databaseConfigured()){for(const item of result.items)await saveReview(ownerOf(s),item,result.language,result.reviewedAt)}
     return json({...result,saved:parsed.data.source==='outlook'&&databaseConfigured()});
-  }catch(error){return error instanceof ReviewError?json({error:error.message},error.status):json({error:'The review could not finish. Please retry; no changes were made to Outlook.'},502)}
+  }catch(error){return error instanceof ReviewError?json({error:error.message},error.status):json({error:'The review could not finish. Please retry and check saved history before reviewing again.'},502)}
 }

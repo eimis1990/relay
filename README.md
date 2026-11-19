@@ -10,7 +10,7 @@ Node 22.13+; `npm ci`, then `npm run dev`. Open http://localhost:3000. Copy `.en
 
 - Responsive website and four-step client brief with persistent, authenticated Supabase storage on Vercel and a localhost-only preview fallback.
 - Portal overview, connection setup screens and help.
-- Microsoft OAuth authorization-code flow with PKCE/state, delegated `User.Read` and `Mail.Read`, server-side account allowlist, authenticated-encryption session cookies and no refresh token.
+- Microsoft OAuth authorization-code flow with PKCE/state, delegated `User.Read` and `Mail.Read`, server-side account allowlist, authenticated-encryption session cookies and optional encrypted offline authorization.
 - Read latest 25 messages from the connected user's own Inbox (sender, subject, date, preview and safe Outlook link). Only GET requests to Microsoft Graph; reading does not mark messages read.
 - Sessions expire after at most one hour. Reconnect to continue. Disconnect clears local browser session; revoke the application's consent in Microsoft to remove permission entirely.
 
@@ -27,7 +27,7 @@ The website can deploy without secrets. Microsoft connections stay disabled unti
 1. In Microsoft Entra admin center, open **App registrations → New registration**.
 2. Name the app **Relay**. To support both business and personal Outlook, choose **Accounts in any organizational directory and personal Microsoft accounts**. This code uses the `common` endpoint. Choose a Web application, not SPA.
 3. Add exact Web redirect URI: `https://YOUR-PROJECT.vercel.app/api/outlook/callback`. Optionally add `http://localhost:3000/api/outlook/callback` for development. Use a stable Vercel URL, not changing preview URLs.
-4. Under **API permissions**, add Microsoft Graph **delegated** `User.Read` and `Mail.Read`. Do not add application-wide, sending or write permissions. Your organization's administrator may need to approve consent.
+4. Under **API permissions**, add Microsoft Graph **delegated** `User.Read` and `Mail.Read`. For optional category sync, add delegated `Mail.ReadWrite` and `MailboxSettings.ReadWrite`. Do not add application-wide or sending permissions. Your organization's administrator may need to approve consent.
 5. Copy the **Application (client) ID**. Under **Certificates & secrets**, create a client secret and privately copy its **Value**, not its ID. Track its expiry date.
 6. Add the following Vercel environment variables, then redeploy:
 
@@ -71,7 +71,7 @@ Set `OPENAI_API_KEY` as a sensitive Production variable in Vercel and redeploy. 
 
 The server fetches selected messages only from the signed-in account's Inbox using Graph GET and plain-text preference. Only the first 8,000 characters per email, sender details, subject, date and priority rules are sent to OpenAI. Attachments and link destinations are not fetched. HTML responses fall back to preview text. Truncation, previews and attachments are clearly flagged. Model output is schema-validated, bound to requested message IDs, and company/deadline evidence must occur verbatim in the source. Email content is untrusted data; the model has no tools or write capability.
 
-OpenAI requests use `store:false`; this opts out of Responses application-state storage, not OpenAI's separate abuse-monitoring retention. Relay does not persist reviews or email bodies in Supabase, localStorage or logs. Results and manual corrections live only in React page state and disappear on reload/navigation. Nothing is sent, labelled, moved, deleted, marked read or approved in Outlook. The Microsoft permissions remain `User.Read` and `Mail.Read`.
+OpenAI requests use `store:false`; this opts out of Responses application-state storage, not OpenAI's separate abuse-monitoring retention. Real reviews and email snapshots are encrypted in Supabase, isolated by the signed-in Microsoft subject; demo results remain temporary. Relay does not send, move, delete, or mark messages read. Optional category sync adds matching labels to Outlook after separate Microsoft consent.
 
 Try furniture demo reviews three explicitly fictional examples through the same AI service without reading or writing Outlook. It requires a signed-in account and the configured API key. It is not evidence of live-mailbox processing. `tests/review-boundaries.mjs` runs the real API routes with mocked Microsoft/OpenAI transports, including unsafe links, truncation, hallucinated evidence, duplicates, provider failures and auth boundaries. A real provider/mailbox smoke test is also required before demonstrating the live workflow.
 
@@ -101,8 +101,18 @@ The public landing page is unchanged. Portal routes are `#portal`, `#review`, `#
 
 Assistant & rules stores an encrypted, owner-scoped configuration in `relay_workflows`, guarded by optimistic revisions and server-only database access. The assistant calls the existing server-side OpenAI integration with structured output and `store:false`; it returns a proposal only. Users must use the proposal and save before future reviews change. Chat is temporary. Browser speech recognition is optional and may send audio to the browser provider; the transcript is editable and never automatically submitted. Voice availability varies by browser.
 
-Label rules match literal case-insensitive substrings in sender, subject, body, AI-established company, or topic. All matching labels are attached to the saved Relay review. The first matching rule with an explicit priority overrides AI priority. These rules do not create Outlook categories or modify messages. Semantic priorities go in reviewer instructions. Existing reviews are not relabeled retroactively.
+Label rules match literal case-insensitive substrings in sender, subject, body, AI-established company, or topic. All matching labels are attached to the saved Relay review. The first matching rule with an explicit priority overrides AI priority. With optional Outlook category sync enabled, matching labels also become Outlook categories. Semantic priorities go in reviewer instructions. Existing reviews are not relabeled retroactively; their Apply current labels action explicitly queues the current matching rules for Outlook.
 
 Continuous mode uses the existing five-minute worker. Daily mode queues incoming mail and processes messages received by the configured local cutoff, starting on the first scheduler run at/after that time. Emails arriving later wait until the next local day; backlogs drain in bounded five-message batches. IANA time zones account for daylight-saving changes. The existing 300-attempt UTC daily cap remains in effect. Polling metadata still occurs between review times. A worker already running can finish with the previous settings.
 
 Apply `20261119060723_relay_workflow_preferences.sql` before deploying the worker change. Existing accounts retain their current language/instructions and continuous scheduling until they save a workflow. Tests cover encrypted persistence, account isolation, revision conflicts, no implicit proposal saves, label matching, cutoff deferral, and winter/summer time-zone behavior.
+
+### Outlook category sync
+
+Apply `20261119064530_relay_outlook_categories.sql` before deploying. In Assistant & rules, the user opts in to category sync and completes Microsoft consent for delegated `Mail.ReadWrite`, `MailboxSettings.ReadWrite`, and `offline_access`. The callback checks both granted scopes and the existing Microsoft subject. Category consent preserves saved review settings and the activation date. A normal read-only background reconnect pauses category syncing.
+
+Review persistence atomically records encrypted category payloads and a pending sync state. The existing leased worker syncs up to five pending updates per check, independent of the AI daily cap. It reuses category names case-insensitively, creates missing colors, and PATCHes only the categories property with existing values preserved and an If-Match version check. Existing colors and categories are never removed or renamed. A missing message is skipped; transient errors retry with backoff up to three attempts, separately from AI reviews. Permission errors stop category writes while allowing read-only reviews to continue. The UI shows pending/failed counts, last sync, pause/resume, and retry controls.
+
+For an older saved review, Apply current labels reads the owner-isolated snapshot and current rules server-side; no arbitrary message IDs or category payloads are accepted from the browser. This does not invoke AI again. Pausing automatic processing stops category dispatch too; an already in-flight request may finish. Removing background access clears the refresh token and both category flags. Revoking permissions completely is done in Microsoft account settings.
+
+Verification: `npm run build` and `npm test`. The history/automation integration suite covers opt-in scopes, missing-grant rejection, owner isolation, atomic outbox, additive updates, ETag conflicts, deduplication, throttling, pause, deleted emails, and independent permission failure. A live Microsoft consent and mailbox check are still required when first activating.

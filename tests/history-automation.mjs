@@ -5,6 +5,7 @@ import {randomBytes,createCipheriv,createHash,createHmac} from 'node:crypto';
 import assert from 'node:assert/strict';
 const secret=randomBytes(48).toString('base64url'),origin='http://127.0.0.1:3220',appOrigin='https://relay-history.example';
 const tables={relay_workflows:[],relay_reviews:[],relay_mail_accounts:[],relay_review_queue:[]};let counter=0,aiCalls=0,graphCalls=0,mode='ok',deltaIds=['new-one'],refreshCalls=0;
+let categoryMode='ok',categoryCreates=0,categoryPatches=0,etag=1;const master=[{displayName:'Personal',color:'preset8'}],messageCategories=new Map();
 function seal(value,purpose){const iv=randomBytes(12),c=createCipheriv('aes-256-gcm',createHash('sha256').update(secret).digest(),iv);c.setAAD(Buffer.from(purpose));return Buffer.concat([iv,c.update(JSON.stringify(value)),c.final(),c.getAuthTag()]).toString('base64url')}
 const cookie=subject=>'relay_ms_0='+seal({subject,email:subject+'@example.com',name:subject,token:'test-mail-token',expires:Date.now()+600000},'session');
 const cookies={a:cookie('a'),b:cookie('b')};
@@ -12,8 +13,24 @@ function matches(row,q){return [...q].filter(([k])=>!['select','limit','order','
 const mock=createServer(async(req,res)=>{
  const url=new URL(req.url,'http://localhost'),reply=(v,status=200)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(v))};
  let raw='';for await(const part of req)raw+=part;
- if(url.pathname==='/token'){refreshCalls++;assert.equal(new URLSearchParams(raw).get('grant_type'),'refresh_token');if(mode==='revoked')return reply({error:'invalid_grant'},400);return reply({access_token:'test-mail-token',refresh_token:'rotated-secret',expires_in:3600})}
- if(url.pathname.startsWith('/graph/')){graphCalls++;assert.equal(req.method,'GET');assert.equal(req.headers.authorization,'Bearer test-mail-token');assert.match(req.headers.prefer,/ImmutableId/);
+ if(url.pathname==='/token'){refreshCalls++;const grant=new URLSearchParams(raw).get('grant_type');assert.ok(['refresh_token','authorization_code'].includes(grant));if(mode==='revoked')return reply({error:'invalid_grant'},400);return reply({access_token:'test-mail-token',refresh_token:'rotated-secret',expires_in:3600,scope:categoryMode==='missing-scope'?'Mail.Read':new URLSearchParams(raw).get('scope')})}
+ if(url.pathname.startsWith('/graph/')){graphCalls++;assert.equal(req.headers.authorization,'Bearer test-mail-token');assert.match(req.headers.prefer,/ImmutableId/);
+  if(url.pathname==='/graph/me')return reply({id:'a',mail:'a@example.com',displayName:'Test A'});
+  if(url.pathname==='/graph/me/outlook/masterCategories'){
+   if(categoryMode==='forbidden')return reply({},403);
+   if(req.method==='GET')return reply({value:master});
+   assert.equal(req.method,'POST');const created=JSON.parse(raw);assert.deepEqual(Object.keys(created).sort(),['color','displayName']);categoryCreates++;master.push(created);return reply(created,201);
+  }
+  if(url.pathname.startsWith('/graph/me/messages/')){
+   const id=decodeURIComponent(url.pathname.split('/').at(-1)),existing=messageCategories.get(id)||['Personal'];
+   if(categoryMode==='deleted')return reply({},404);
+   if(req.method==='GET'){assert.equal(url.searchParams.get('$select'),'id,categories');return reply({id,categories:existing,'@odata.etag':'W/"'+etag+'"'})}
+   assert.equal(req.method,'PATCH');categoryPatches++;assert.equal(req.headers['if-match'],'W/"'+etag+'"');const body=JSON.parse(raw);assert.deepEqual(Object.keys(body),['categories']);
+   if(categoryMode==='throttled'){res.setHeader('Retry-After','600');return reply({},429)}
+   if(categoryMode==='conflict'){categoryMode='ok';messageCategories.set(id,[...existing,'Added in Outlook']);etag++;return reply({},412)}
+   assert.ok(existing.every(c=>body.categories.includes(c)),'preserves all existing categories');messageCategories.set(id,body.categories);etag++;return reply({id,categories:body.categories});
+  }
+  assert.equal(req.method,'GET');
   if(url.pathname.endsWith('/delta'))return reply({value:deltaIds.map(id=>({id,receivedDateTime:new Date().toISOString()})),[mode==='next-page'?'@odata.nextLink':'@odata.deltaLink']:mode==='evil-cursor'?'https://evil.example/steal':'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=opaque'});
   const id=decodeURIComponent(url.pathname.split('/').at(-1));return reply({id,subject:'Desk quotation',from:{emailAddress:{name:'Demo Office',address:'sales@office.example'}},receivedDateTime:new Date().toISOString(),bodyPreview:'Quote please',body:{contentType:'text',content:'Demo Office needs a quote for 24 oak desks.'},isRead:false,hasAttachments:false,webLink:'https://outlook.live.com/mail/item/'+id});
  }
@@ -22,7 +39,7 @@ const mock=createServer(async(req,res)=>{
  if(url.pathname==='/rest/v1/rpc/relay_configure_scheduler'){assert.match(JSON.parse(raw).p_token,/^[a-f0-9]{64}$/);return reply(null)}
  const table=url.pathname.split('/').at(-1),rows=tables[table];assert.ok(rows,'known table');
  if(req.method==='GET'){let result=rows.filter(r=>matches(r,url.searchParams));if(table==='relay_reviews')result.sort((a,b)=>b.id-a.id);return reply(result.slice(0,Number(url.searchParams.get('limit')||1000)))}
- if(req.method==='POST'){const result=[];for(const input of [JSON.parse(raw)].flat()){const existing=rows.find(r=>r.owner_id===input.owner_id&&(table==='relay_mail_accounts'||r.message_id===input.message_id));if(existing){if(req.headers.prefer?.includes('merge-duplicates'))Object.assign(existing,input);else continue;result.push(existing)}else{const row=table==='relay_reviews'?{id:++counter,revision:1,checked:false,priority:null,topic:null,...input}:table==='relay_review_queue'?{status:'pending',attempts:0,available_at:new Date(0).toISOString(),created_at:new Date().toISOString(),...input}:input;rows.push(row);result.push(row)}}return reply(result)}
+ if(req.method==='POST'){const result=[];for(const input of [JSON.parse(raw)].flat()){const existing=rows.find(r=>r.owner_id===input.owner_id&&(table==='relay_mail_accounts'||r.message_id===input.message_id));if(existing){if(req.headers.prefer?.includes('merge-duplicates'))Object.assign(existing,input);else continue;result.push(existing)}else{const row=table==='relay_reviews'?{id:++counter,revision:1,checked:false,priority:null,topic:null,category_status:'none',category_attempts:0,category_revision:'default-version',category_available_at:new Date(0).toISOString(),...input}:table==='relay_review_queue'?{status:'pending',attempts:0,available_at:new Date(0).toISOString(),created_at:new Date().toISOString(),...input}:input;rows.push(row);result.push(row)}}return reply(result)}
  assert.equal(req.method,'PATCH');const changed=rows.filter(r=>matches(r,url.searchParams));for(const row of changed)Object.assign(row,JSON.parse(raw));return reply(changed);
 });
 await new Promise(r=>mock.listen(0,'127.0.0.1',r));
@@ -84,6 +101,33 @@ try{
  assert.equal(tables.relay_review_queue.find(x=>x.message_id==='scheduled-mail').status,'pending');
  await call('/api/workflow','PUT',{data:workflow,revision:2});await auto('check');assert.equal(aiCalls,beforeDaily+1);
  assert.equal(tables.relay_review_queue.find(x=>x.message_id==='scheduled-mail').status,'done');
+ // Categories have separate consent, owner checks and a durable retry path.
+ const cat=(action,rest={},user='a',headers={})=>call('/api/outlook/categories','POST',{action,...rest},user,headers);
+ assert.equal((await call('/api/outlook/categories','GET',null,'none')).status,401);
+ assert.equal((await cat('apply',{id:savedId},'a',{Origin:'https://evil.example'})).status,403);
+ assert.equal((await cat('resume')).status,409,'cannot enable category access without OAuth');
+ let normal=await connect('');assert.ok(!new URL(normal.headers.get('location')).searchParams.get('scope').includes('ReadWrite'));
+ assert.equal((await connect('categories=true')).status,400);assert.equal((await connect('categories=true&background=true')).status,400);
+ const authorize=async()=>{const r=await connect('categories=true&background=true&consent=true');assert.equal(r.status,303);const u=new URL(r.headers.get('location'));assert.match(u.searchParams.get('scope'),/Mail.ReadWrite/);assert.match(u.searchParams.get('scope'),/MailboxSettings.ReadWrite/);assert.ok(!u.searchParams.get('scope').includes('Mail.Send'));return fetch(origin+'/api/outlook/callback?state='+u.searchParams.get('state')+'&code=test',{headers:{Cookie:r.headers.get('set-cookie').split(';')[0]},redirect:'manual'})};
+ categoryMode='missing-scope';r=await authorize();assert.match(r.headers.get('location'),/category_permission_required/);assert.ok(!a.category_permission);
+ categoryMode='ok';const started=a.started_at,language=a.language;r=await authorize();assert.match(r.headers.get('location'),/categories_connected/);assert.equal(a.category_enabled,true);assert.equal(a.started_at,started);assert.equal(a.language,language,'category consent preserves review settings');
+ assert.equal((await cat('apply',{id:savedId},'b')).status,409);
+ assert.equal((await cat('apply',{id:'999999'})).status,404);
+ assert.equal((await cat('apply',{id:savedId,message_id:'arbitrary'})).status,400);
+ const beforeCats=aiCalls;
+ categoryMode='conflict';r=await cat('apply',{id:savedId});assert.equal((await r.json()).state,'queued');await auto('check');
+ assert.equal(aiCalls,beforeCats,'backfill does not rerun AI');assert.equal(categoryCreates,1);assert.equal(categoryPatches,2,'retries etag conflict');
+ assert.deepEqual(messageCategories.get('manual-one'),['Personal','Added in Outlook','Sales']);assert.equal(master.find(x=>x.displayName==='Sales').color,'preset4');
+ assert.equal(tables.relay_reviews.find(x=>String(x.id)===savedId).category_status,'done');
+ await cat('apply',{id:savedId});await auto('check');assert.equal(categoryPatches,2,'idempotent already-applied categories');assert.equal(categoryCreates,1);
+ deltaIds=['auto-category'];await auto('check');const automatic=tables.relay_reviews.find(x=>x.message_id==='auto-category');assert.equal(automatic.category_status,'done');assert.deepEqual(messageCategories.get('auto-category'),['Personal','Sales']);assert.ok(!automatic.category_payload.includes('Sales'));
+ await cat('pause');deltaIds=['paused-category'];const patches=categoryPatches;await auto('check');assert.equal(categoryPatches,patches);assert.equal(tables.relay_reviews.find(x=>x.message_id==='paused-category').category_status,'none');
+ await cat('resume');deltaIds=['retry-category'];categoryMode='throttled';await auto('check');const retry=tables.relay_reviews.find(x=>x.message_id==='retry-category');assert.equal(retry.category_status,'pending');assert.equal(retry.category_attempts,1);assert.ok(Date.parse(retry.category_available_at)>Date.now()+590000);const beforeRetry=aiCalls;
+ categoryMode='ok';retry.category_available_at=new Date(0).toISOString();a.budget_used=300;await auto('check');assert.equal(retry.category_status,'done','category retry runs even at AI daily limit');assert.equal(aiCalls,beforeRetry);a.budget_used=0;
+ deltaIds=['missing-category'];categoryMode='deleted';await auto('check');assert.equal(tables.relay_reviews.find(x=>x.message_id==='missing-category').category_status,'skipped');
+ deltaIds=['permission-category'];categoryMode='forbidden';await auto('check');assert.equal(a.category_enabled,false);assert.equal(a.category_permission,false);assert.equal(a.enabled,true,'category revocation does not disable AI reviews');
+ categoryMode='ok';assert.equal((await cat('resume')).status,409);const statusText=await (await call('/api/outlook/categories')).text();assert.ok(!statusText.includes('refresh_cipher'));assert.ok(!statusText.includes('payload'));
+ console.log('PASS: category consent and scopes, owner isolation, atomic review/outbox, automatic sync, manual backfill without AI, additive updates, etag conflict retry, deduplication, pause, throttling, daily cap independence, deleted mail and permission revocation.');
  console.log('PASS: encrypted workflow persistence, owner isolation, revision conflicts, invalid rules rejected, AI proposal does not save, saved rules applied to reviews.');
  console.log('PASS: encrypted persistent history, tenant isolation, correction conflicts and restart, duplicate protection, queue leases, pause/resume, refresh rotation, revoked access, bounded retries, daily cap, safe delta URLs, authenticated cron, explicit offline consent.');
 }finally{await stop();mock.close();mock.closeAllConnections()}
