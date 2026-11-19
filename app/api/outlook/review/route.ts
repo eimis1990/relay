@@ -1,3 +1,5 @@
+import {readWorkflow} from '../../../../lib/workflow-store';
+import {applyWorkflow} from '../../../../lib/workflow';
 import {ownerOf,saveReview} from '../../../../lib/review-store';
 import {databaseConfigured} from '../../../../lib/workspace-store';
 import { config,json,session } from '../../../../lib/outlook';
@@ -17,8 +19,11 @@ export async function POST(req:Request){
     let parsed;try{parsed=reviewRequestSchema.safeParse(JSON.parse(body))}catch{return json({error:'Invalid JSON.'},400)}
     if(!parsed.success)return json({error:'Select 1–5 different emails and confirm the AI review.'},400);
     if(!process.env.OPENAI_API_KEY)return json({error:'AI review is not configured yet. Add the Relay OpenAI API key in Vercel and redeploy.'},503);
+    const workflow=parsed.data.source==='outlook'&&databaseConfigured()?(await readWorkflow(ownerOf(s))).data:null;
+    if(workflow)parsed.data.priorityRules=[workflow.instructions,parsed.data.priorityRules].filter(Boolean).join('\n').slice(0,1200);
     const emails=await collectReviewEmails(s.token,parsed.data);
     const result=await reviewEmails(emails,parsed.data);
+    if(workflow)result.items=result.items.map(item=>applyWorkflow(item,workflow));
     if(parsed.data.source==='outlook'&&databaseConfigured()){for(const item of result.items)await saveReview(ownerOf(s),item,result.language,result.reviewedAt)}
     return json({...result,saved:parsed.data.source==='outlook'&&databaseConfigured()});
   }catch(error){return error instanceof ReviewError?json({error:error.message},error.status):json({error:'The review could not finish. Please retry; no changes were made to Outlook.'},502)}

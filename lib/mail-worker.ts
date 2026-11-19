@@ -1,4 +1,6 @@
 import 'server-only';
+import {readWorkflow} from './workflow-store';
+import {eligibleAt,applyWorkflow} from './workflow';
 import {createHmac,randomUUID} from 'node:crypto';
 import {config,seal,unseal,scope,graph} from './outlook';
 import {account,db,saveReview,type Account} from './review-store';
@@ -21,7 +23,7 @@ async function refreshedToken(a:Account,lease:string){
  if(token.refresh_token){const saved=await db('relay_mail_accounts',{owner_id:'eq.'+a.owner_id,lock_id:'eq.'+lease,enabled:'eq.true',refresh_cipher:'eq.'+a.refresh_cipher},{method:'PATCH',body:JSON.stringify({refresh_cipher:seal(token.refresh_token,'refresh:'+a.owner_id)})});if(!saved.length)throw new ReviewError('Background connection changed. Check its status before retrying.',409)}
  return token.access_token as string;
 }
-export async function enqueue(owner:string,ids:string[]){if(!ids.length)return;await db('relay_review_queue',{on_conflict:'owner_id,message_id'},{method:'POST',body:JSON.stringify([...new Set(ids)].map(message_id=>({owner_id:owner,message_id})))},'resolution=ignore-duplicates,return=representation')}
+export async function enqueue(owner:string,ids:string[],received:Record<string,string>={}){if(!ids.length)return;await db('relay_review_queue',{on_conflict:'owner_id,message_id'},{method:'POST',body:JSON.stringify([...new Set(ids)].map(message_id=>({owner_id:owner,message_id,...(received[message_id]?{received_at:received[message_id]}:{})})))},'resolution=ignore-duplicates,return=representation')}
 export async function runMailbox(owner:string){
  const lease=randomUUID(),now=new Date(),today=now.toISOString().slice(0,10);
  const claimed=await db('relay_mail_accounts',{owner_id:'eq.'+owner,enabled:'eq.true',lock_until:'lt.'+now.toISOString()},{method:'PATCH',body:JSON.stringify({lock_id:lease,lock_until:new Date(Date.now()+240000).toISOString(),last_polled_at:now.toISOString()})});
@@ -30,6 +32,7 @@ export async function runMailbox(owner:string){
  const patch=async(data:object)=>{const rows=await db('relay_mail_accounts',{owner_id:'eq.'+owner,lock_id:'eq.'+lease},{method:'PATCH',body:JSON.stringify(data)});if(!rows.length)throw new ReviewError('Processing lease expired. Retry later.',409)};
  try{
   if(!config().allowed.includes(a.email.toLowerCase())){await patch({enabled:false,last_error:'Account is no longer allowed.'});return {state:'not-allowed',processed}}
+  const workflow=(await readWorkflow(owner,a)).data;
   const token=await refreshedToken(a,lease);
   const initial='https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?'+new URLSearchParams({$select:'id,receivedDateTime',$orderby:'receivedDateTime desc',changeType:'created'});
   const url=deltaUrl(a.cursor_cipher?unseal<string>(a.cursor_cipher,'cursor:'+owner):initial);
@@ -40,11 +43,12 @@ export async function runMailbox(owner:string){
   const data=await r.json();if(!Array.isArray(data.value))throw new ReviewError('Microsoft returned an invalid inbox page.',502);
   const next=data['@odata.nextLink']||data['@odata.deltaLink'];if(typeof next!=='string')throw new ReviewError('Microsoft did not return a sync checkpoint.',502);
   deltaUrl(next);
-  await enqueue(owner,data.value.filter((m:any)=>!m['@removed']&&typeof m.id==='string'&&m.id.length<=1500&&typeof m.receivedDateTime==='string'&&Date.parse(m.receivedDateTime)>=Date.parse(a.started_at!)).map((m:any)=>m.id));
+  await enqueue(owner,data.value.filter((m:any)=>!m['@removed']&&typeof m.id==='string'&&m.id.length<=1500&&typeof m.receivedDateTime==='string'&&Date.parse(m.receivedDateTime)>=Date.parse(a.started_at!)).map((m:any)=>m.id),Object.fromEntries(data.value.filter((m:any)=>typeof m.id==='string'&&Number.isFinite(Date.parse(m.receivedDateTime))).map((m:any)=>[m.id,m.receivedDateTime])));
   await patch({cursor_cipher:seal(next,'cursor:'+owner)});
   const used=a.budget_date===today?a.budget_used:0;
   if(used>=DAILY_LIMIT){await patch({last_error:'Daily limit reached (300 email review attempts). Processing resumes tomorrow UTC.'});return {state:'daily-limit',processed}}
-  const pending=await db('relay_review_queue',{owner_id:'eq.'+owner,status:'eq.pending',available_at:'lte.'+new Date().toISOString(),order:'created_at.asc',limit:String(Math.min(5,DAILY_LIMIT-used))});
+  const candidates=await db('relay_review_queue',{owner_id:'eq.'+owner,status:'eq.pending',available_at:'lte.'+new Date().toISOString(),order:'created_at.asc',limit:'100'});
+  const pending=candidates.filter((job:any)=>eligibleAt(job.received_at||job.created_at,workflow)).slice(0,Math.min(5,DAILY_LIMIT-used));
   const emails:ReviewEmail[]=[],jobs:any[]=[];
   for(const job of pending){
    const existing=await db('relay_reviews',{owner_id:'eq.'+owner,message_id:'eq.'+job.message_id,select:'id',limit:'1'});
@@ -59,9 +63,9 @@ export async function runMailbox(owner:string){
    await patch({budget_date:today,budget_used:used+emails.length});
    for(const job of jobs)await db('relay_review_queue',{owner_id:'eq.'+owner,message_id:'eq.'+job.message_id},{method:'PATCH',body:JSON.stringify({attempts:job.attempts+1,available_at:new Date(Date.now()+300000).toISOString()})});
    try{
-    const request={source:'outlook',ids:emails.map(e=>e.id),language:a.language,priorityRules:a.rules_cipher?unseal<string>(a.rules_cipher,'rules:'+owner):'',consent:true} as ReviewRequest;
+    const request={source:'outlook',ids:emails.map(e=>e.id),language:workflow.language,priorityRules:workflow.instructions,consent:true} as ReviewRequest;
     const result=await reviewEmails(emails,request);
-    for(const item of result.items){await saveReview(owner,item,a.language,result.reviewedAt);await db('relay_review_queue',{owner_id:'eq.'+owner,message_id:'eq.'+item.email.id},{method:'PATCH',body:JSON.stringify({status:'done',last_error:null})});processed++}
+    for(const item of result.items){await saveReview(owner,applyWorkflow(item,workflow),workflow.language,result.reviewedAt);await db('relay_review_queue',{owner_id:'eq.'+owner,message_id:'eq.'+item.email.id},{method:'PATCH',body:JSON.stringify({status:'done',last_error:null})});processed++}
    }catch(e){for(const job of jobs)await db('relay_review_queue',{owner_id:'eq.'+owner,message_id:'eq.'+job.message_id},{method:'PATCH',body:JSON.stringify({status:job.attempts+1>=3?'failed':'pending',available_at:new Date(Date.now()+300000*Math.pow(3,job.attempts)).toISOString(),last_error:e instanceof ReviewError?e.message:'Review interrupted. Retrying safely.'})});throw e}
   }
   await patch({last_success_at:new Date().toISOString(),last_error:null});return {state:'complete',processed};

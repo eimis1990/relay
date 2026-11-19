@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {defaultWorkflow,workflowSchema,eligibleAt,applyWorkflow} from '../lib/workflow.ts';
+const daily={...defaultWorkflow,schedule:{mode:'daily',time:'07:00',timezone:'Europe/Vilnius'}};
+assert.equal(eligibleAt('2026-11-18T18:00:00Z',daily,new Date('2026-11-19T04:59:00Z')),false);
+assert.equal(eligibleAt('2026-11-18T18:00:00Z',daily,new Date('2026-11-19T05:00:00Z')),true);
+assert.equal(eligibleAt('2026-11-19T05:01:00Z',daily,new Date('2026-11-19T07:00:00Z')),false);
+assert.equal(eligibleAt('2026-11-19T05:01:00Z',daily,new Date('2026-11-20T05:00:00Z')),true);
+assert.equal(eligibleAt('2026-07-01T03:50:00Z',daily,new Date('2026-07-01T04:00:00Z')),true,'summer DST uses local 7am');
+assert.equal(eligibleAt('2026-07-01T04:01:00Z',daily,new Date('2026-07-01T04:30:00Z')),false);
+assert.equal(workflowSchema.safeParse({...daily,schedule:{...daily.schedule,timezone:'invalid'}}).success,false);
+assert.equal(workflowSchema.safeParse({...daily,schedule:{...daily.schedule,time:'25:00'}}).success,false);
+const label={id:'finance',name:'Finance',color:'green',field:'subject',value:'INVOICE',enabled:true,priority:'High'};
+assert.equal(workflowSchema.safeParse({...daily,labels:[label,label]}).success,false);
+const item={email:{sender:'Office',senderEmail:'office@example.com',subject:'Invoice 123',text:'Please pay'},assessment:{company:null,topic:'Invoice',priority:'Normal',priorityReason:'Routine invoice'}};
+let result=applyWorkflow(item,{...defaultWorkflow,labels:[label,{...label,id:'second',name:'Secondary',priority:'Low'}]});
+assert.equal(result.assessment.priority,'High');assert.equal(result.labels.length,2);assert.equal(item.assessment.priority,'Normal');
+result=applyWorkflow(item,{...defaultWorkflow,labels:[{...label,enabled:false}]});assert.equal(result.labels.length,0);assert.equal(result.assessment.priority,'Normal');
+console.log('PASS: local-time daily cutoffs, DST, next-day deferral, configuration validation, deterministic labels, first-match priorities, disabled rules.');

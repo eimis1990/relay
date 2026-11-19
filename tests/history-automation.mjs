@@ -4,7 +4,7 @@ import {once} from 'node:events';
 import {randomBytes,createCipheriv,createHash,createHmac} from 'node:crypto';
 import assert from 'node:assert/strict';
 const secret=randomBytes(48).toString('base64url'),origin='http://127.0.0.1:3220',appOrigin='https://relay-history.example';
-const tables={relay_reviews:[],relay_mail_accounts:[],relay_review_queue:[]};let counter=0,aiCalls=0,graphCalls=0,mode='ok',deltaIds=['new-one'],refreshCalls=0;
+const tables={relay_workflows:[],relay_reviews:[],relay_mail_accounts:[],relay_review_queue:[]};let counter=0,aiCalls=0,graphCalls=0,mode='ok',deltaIds=['new-one'],refreshCalls=0;
 function seal(value,purpose){const iv=randomBytes(12),c=createCipheriv('aes-256-gcm',createHash('sha256').update(secret).digest(),iv);c.setAAD(Buffer.from(purpose));return Buffer.concat([iv,c.update(JSON.stringify(value)),c.final(),c.getAuthTag()]).toString('base64url')}
 const cookie=subject=>'relay_ms_0='+seal({subject,email:subject+'@example.com',name:subject,token:'test-mail-token',expires:Date.now()+600000},'session');
 const cookies={a:cookie('a'),b:cookie('b')};
@@ -17,7 +17,7 @@ const mock=createServer(async(req,res)=>{
   if(url.pathname.endsWith('/delta'))return reply({value:deltaIds.map(id=>({id,receivedDateTime:new Date().toISOString()})),[mode==='next-page'?'@odata.nextLink':'@odata.deltaLink']:mode==='evil-cursor'?'https://evil.example/steal':'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=opaque'});
   const id=decodeURIComponent(url.pathname.split('/').at(-1));return reply({id,subject:'Desk quotation',from:{emailAddress:{name:'Demo Office',address:'sales@office.example'}},receivedDateTime:new Date().toISOString(),bodyPreview:'Quote please',body:{contentType:'text',content:'Demo Office needs a quote for 24 oak desks.'},isRead:false,hasAttachments:false,webLink:'https://outlook.live.com/mail/item/'+id});
  }
- if(url.pathname==='/openai'){aiCalls++;const body=JSON.parse(raw);assert.equal(body.store,false);if(mode==='ai-fail')return reply({},429);if(mode==='slow')await new Promise(r=>setTimeout(r,200));const reviews=JSON.parse(body.input).emails.map(e=>({id:e.id,company:'Demo Office',companyEvidence:'Demo Office',topic:'Quote request',priority:'Normal',summary:'A quote for desks is requested.',priorityReason:'No urgent deadline.',nextAction:'Prepare a quotation.',deadlineEvidence:null,needsAttention:false,uncertainty:null}));return reply({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({reviews})}]}]})}
+ if(url.pathname==='/openai'){aiCalls++;const body=JSON.parse(raw);if(body.text.format.name==='workflow_proposal'){const current=JSON.parse(body.input).current;return reply({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({reply:'Here is your proposal.',workflow:current})}]}]})}assert.equal(body.store,false);if(mode==='ai-fail')return reply({},429);if(mode==='slow')await new Promise(r=>setTimeout(r,200));const reviews=JSON.parse(body.input).emails.map(e=>({id:e.id,company:'Demo Office',companyEvidence:'Demo Office',topic:'Quote request',priority:'Normal',summary:'A quote for desks is requested.',priorityReason:'No urgent deadline.',nextAction:'Prepare a quotation.',deadlineEvidence:null,needsAttention:false,uncertainty:null}));return reply({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({reviews})}]}]})}
  assert.equal(req.headers.apikey,'sb_secret_test');assert.equal(req.headers.authorization,undefined);
  if(url.pathname==='/rest/v1/rpc/relay_configure_scheduler'){assert.match(JSON.parse(raw).p_token,/^[a-f0-9]{64}$/);return reply(null)}
  const table=url.pathname.split('/').at(-1),rows=tables[table];assert.ok(rows,'known table');
@@ -59,5 +59,20 @@ try{
  // New persistent permission only requested with an authenticated, explicit background opt-in.
  const connect=body=>fetch(origin+'/api/outlook/connect',{method:'POST',headers:{Cookie:cookies.a,Origin:appOrigin,'Content-Type':'application/x-www-form-urlencoded'},body,redirect:'manual'});
  assert.equal((await connect('background=true')).status,400);r=await connect('background=true&consent=true&language=Lithuanian');assert.equal(r.status,303);assert.match(new URL(r.headers.get('location')).searchParams.get('scope'),/offline_access/);
+
+ const workflow={language:'English',instructions:'Keep summaries concise.',schedule:{mode:'continuous',time:'07:00',timezone:'Europe/Vilnius'},labels:[{id:'quotes',name:'Sales',color:'green',field:'subject',value:'quotation',priority:'High',enabled:true}]};
+ assert.equal((await call('/api/workflow','GET',null,'none')).status,401);
+ assert.equal((await call('/api/workflow','PUT',{data:workflow,revision:null},'a',{Origin:'https://evil.example'})).status,403);
+ assert.equal((await call('/api/workflow','PUT',{data:workflow,revision:null})).status,200);
+ assert.ok(!tables.relay_workflows[0].settings_cipher.includes('concise'));
+ assert.deepEqual((await (await call('/api/workflow')).json()).data,workflow);
+ assert.equal((await (await call('/api/workflow','GET',null,'b')).json()).revision,null);
+ assert.equal((await call('/api/workflow','PUT',{data:workflow,revision:2})).status,409);
+ assert.equal((await call('/api/workflow','PUT',{data:{...workflow,labels:[{...workflow.labels[0],value:''}]},revision:1})).status,400);
+ assert.equal((await call('/api/workflow/assistant','POST',{message:'Keep these rules',current:workflow})).status,200);
+ assert.equal(tables.relay_workflows[0].revision,1,'assistant proposals never save automatically');
+ const withRules=await call('/api/outlook/review','POST',{...review,ids:['label-test']});assert.equal(withRules.status,200);
+ const labeled=(await (await history()).json()).items.find(x=>x.email.id==='label-test');assert.equal(labeled.labels[0].name,'Sales');assert.equal(labeled.assessment.priority,'High');
+ console.log('PASS: encrypted workflow persistence, owner isolation, revision conflicts, invalid rules rejected, AI proposal does not save, saved rules applied to reviews.');
  console.log('PASS: encrypted persistent history, tenant isolation, correction conflicts and restart, duplicate protection, queue leases, pause/resume, refresh rotation, revoked access, bounded retries, daily cap, safe delta URLs, authenticated cron, explicit offline consent.');
 }finally{await stop();mock.close();mock.closeAllConnections()}
