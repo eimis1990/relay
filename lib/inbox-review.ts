@@ -50,7 +50,7 @@ export function parseReviewOutput(raw:unknown, emails:ReviewEmail[]):Assessment[
     if(review.deadlineEvidence && !source.includes(review.deadlineEvidence.toLowerCase())) {
       review.deadlineEvidence=null;review.needsAttention=true;
     }
-    if(email.truncated||email.previewOnly||email.hasAttachments) review.needsAttention=true;
+    if(!review.company||email.truncated||email.previewOnly||email.hasAttachments) review.needsAttention=true;
     return review;
   });
 }
