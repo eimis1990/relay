@@ -43,9 +43,12 @@ export function parseReviewOutput(raw:unknown, emails:ReviewEmail[]):Assessment[
   return emails.map(email=>{
     const review=result.reviews.find(r=>r.id===email.id)!;
     // Evidence must actually occur in the supplied email, not be invented by the model.
-    const source=[email.sender,email.senderEmail,email.subject,email.text].join(' ').toLowerCase();
+    const originalSource=[email.sender,email.senderEmail,email.subject,email.text].join(' ');
+    const source=originalSource.toLowerCase();
     if(review.company && (!review.companyEvidence || !source.includes(review.companyEvidence.toLowerCase()))) {
-      review.company=null;review.companyEvidence=null;review.needsAttention=true;
+      const at=source.indexOf(review.company.toLowerCase());
+      if(at>=0){review.companyEvidence=originalSource.slice(at,at+review.company.length)}
+      else{review.company=null;review.companyEvidence=null;review.needsAttention=true;}
     }
     if(review.deadlineEvidence && !source.includes(review.deadlineEvidence.toLowerCase())) {
       review.deadlineEvidence=null;review.needsAttention=true;

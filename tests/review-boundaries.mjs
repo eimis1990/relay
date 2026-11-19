@@ -28,7 +28,7 @@ const mock=createServer(async(req,res)=>{
   if(mode==='rate')return reply({error:{message:'sensitive provider error'}},429);
   if(mode==='incomplete')return reply({status:'incomplete',output:[]});
   if(mode==='refusal')return reply({status:'completed',output:[{type:'message',content:[{type:'refusal',refusal:'no'}]}]});
-  const reviews=emails.map(e=>({id:e.id,company:'Demo Office',companyEvidence:mode==='hallucination'?'Invented company':'Demo Office',topic:'Quote request',priority:'Normal',summary:'The sender requests a quote for desks.',priorityReason:'No immediate deadline risk is established.',nextAction:'Prepare a quote and verify the requirements.',deadlineEvidence:mode==='hallucination'?'Imaginary deadline':e.id==='one'?'before Friday':null,needsAttention:false,uncertainty:null}));
+  const reviews=emails.map(e=>({id:e.id,company:mode==='hallucination'?'Imaginary company':'Demo Office',companyEvidence:mode==='hallucination'?'Invented company':mode==='translated-evidence'?'Rašo Demo Office':'Demo Office',topic:'Quote request',priority:'Normal',summary:'The sender requests a quote for desks.',priorityReason:'No immediate deadline risk is established.',nextAction:'Prepare a quote and verify the requirements.',deadlineEvidence:mode==='hallucination'?'Imaginary deadline':e.id==='one'?'before Friday':null,needsAttention:false,uncertainty:null}));
   if(mode==='wrong-id')reviews[0].id='not-requested';
   if(mode==='duplicate'&&reviews.length>1)reviews[1].id=reviews[0].id;
   if(mode==='invalid')reviews[0].priority='Critical';
@@ -63,6 +63,7 @@ try{
  let r=await fetch(origin+'/api/outlook/messages',{headers:{Cookie}});assert.equal(r.status,200);let j=await r.json();assert.equal(j.messages[0].senderEmail,'sales@office.example');assert.equal(j.messages[1].webLink,null);assert.equal(j.messages[2].webLink,null);
  r=await post();assert.equal(r.status,200);assert.match(r.headers.get('cache-control'),/no-store/);j=await r.json();assert.equal(j.items[0].assessment.company,'Demo Office');assert.equal(j.items[0].assessment.deadlineEvidence,'before Friday');assert.equal(j.source,'outlook');
  r=await post({...payload,ids:['two','three']});assert.equal(r.status,200);j=await r.json();assert.equal(j.items[0].email.text.length,8000);assert.equal(j.items[0].email.truncated,true);assert.equal(j.items[0].assessment.needsAttention,true);assert.equal(j.items[1].email.previewOnly,true);assert.equal(j.items[1].email.text,'Plain preview');
+ mode='translated-evidence';r=await post();j=await r.json();assert.equal(j.items[0].assessment.company,'Demo Office');assert.equal(j.items[0].assessment.companyEvidence,'Demo Office');
  mode='hallucination';r=await post();j=await r.json();assert.equal(j.items[0].assessment.company,null);assert.equal(j.items[0].assessment.deadlineEvidence,null);assert.equal(j.items[0].assessment.needsAttention,true);
  for(const [failure,expected] of [['missing',409],['rate',429],['incomplete',502],['refusal',422],['wrong-id',502],['invalid',502]]){mode=failure;r=await post();assert.equal(r.status,expected,failure);assert.ok(!(await r.text()).includes('sensitive provider error'))}
  mode='duplicate';assert.equal((await post({...payload,ids:['one','two']})).status,502);
