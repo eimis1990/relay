@@ -10,4 +10,4 @@ export async function session(){try{const c=await cookies();const encoded=[0,1,2
 export async function setSession(s:Session){const value=seal(s,'session');if(value.length>9000)throw Error('session_too_large');const c=await cookies();for(let i=0;i<3;i++)c.set('relay_ms_'+i,value.slice(i*3000,(i+1)*3000),options(Math.max(0,Math.floor((s.expires-Date.now())/1000))))}
 export async function clearSession(){const c=await cookies();for(let i=0;i<3;i++)c.set('relay_ms_'+i,'',options(0))}
 export function json(value:unknown,status=200){return Response.json(value,{status,headers:{'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'}})}
-export async function graph(token:string,path:string){return fetch('https://graph.microsoft.com/v1.0/'+path,{headers:{Authorization:'Bearer '+token,Prefer:'outlook.body-content-type="text"'},cache:'no-store',signal:AbortSignal.timeout(15000)})}
+export async function graph(token:string,path:string){return fetch('https://graph.microsoft.com/v1.0/'+path,{headers:{Authorization:'Bearer '+token,Prefer:'outlook.body-content-type="text", IdType="ImmutableId"'},cache:'no-store',signal:AbortSignal.timeout(15000)})}

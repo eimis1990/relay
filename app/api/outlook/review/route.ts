@@ -1,3 +1,5 @@
+import {ownerOf,saveReview} from '../../../../lib/review-store';
+import {databaseConfigured} from '../../../../lib/workspace-store';
 import { config,json,session } from '../../../../lib/outlook';
 import { reviewRequestSchema } from '../../../../lib/inbox-review';
 import { collectReviewEmails,reviewEmails,ReviewError } from '../../../../lib/review-service';
@@ -16,6 +18,8 @@ export async function POST(req:Request){
     if(!parsed.success)return json({error:'Select 1–5 different emails and confirm the AI review.'},400);
     if(!process.env.OPENAI_API_KEY)return json({error:'AI review is not configured yet. Add the Relay OpenAI API key in Vercel and redeploy.'},503);
     const emails=await collectReviewEmails(s.token,parsed.data);
-    return json(await reviewEmails(emails,parsed.data));
+    const result=await reviewEmails(emails,parsed.data);
+    if(parsed.data.source==='outlook'&&databaseConfigured()){for(const item of result.items)await saveReview(ownerOf(s),item,result.language,result.reviewedAt)}
+    return json({...result,saved:parsed.data.source==='outlook'&&databaseConfigured()});
   }catch(error){return error instanceof ReviewError?json({error:error.message},error.status):json({error:'The review could not finish. Please retry; no changes were made to Outlook.'},502)}
 }
