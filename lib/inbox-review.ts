@@ -25,7 +25,7 @@ export const assessmentSchema = z.object({
   needsAttention:z.boolean(), uncertainty:z.string().max(400).nullable(),
 }).strict();
 export type Assessment = z.infer<typeof assessmentSchema>;
-export type ReviewItem = { email:ReviewEmail; assessment:Assessment; labels?:{name:string;color:string}[] };
+export type ReviewItem = { email:ReviewEmail; assessment:Assessment; draftRequested?:boolean;draftInstructions?:string;labels?:{name:string;color:string}[] };
 const properties = {
   id:{type:'string'},company:{type:['string','null']},companyEvidence:{type:['string','null']},
   topic:{type:'string',enum:topics},priority:{type:'string',enum:priorities},

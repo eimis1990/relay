@@ -6,6 +6,8 @@ import {config,seal,unseal,scope,categoryScope,hasCategoryScopes,graph} from './
 import {account,db,saveReview,type Account} from './review-store';
 import {reviewEmails,collectReviewEmails,ReviewError} from './review-service';
 import type {ReviewEmail,ReviewRequest} from './inbox-review';
+import {processDrafts} from './reply-drafts';
+import {notifyReviews} from './telegram';
 import {syncCategories} from './outlook-categories';
 export const DAILY_LIMIT=300;
 export function cronToken(){return createHmac('sha256',config().secret).update('relay-review-cron-v1').digest('hex')}
@@ -27,6 +29,7 @@ async function refreshedToken(a:Account,lease:string){
 }
 export async function enqueue(owner:string,ids:string[],received:Record<string,string>={}){if(!ids.length)return;await db('relay_review_queue',{on_conflict:'owner_id,message_id'},{method:'POST',body:JSON.stringify([...new Set(ids)].map(message_id=>({owner_id:owner,message_id,...(received[message_id]?{received_at:received[message_id]}:{})})))},'resolution=ignore-duplicates,return=representation')}
 export async function runMailbox(owner:string){
+ const deadline=Date.now()+145000;
  const lease=randomUUID(),now=new Date(),today=now.toISOString().slice(0,10);
  const claimed=await db('relay_mail_accounts',{owner_id:'eq.'+owner,enabled:'eq.true',lock_until:'lt.'+now.toISOString()},{method:'PATCH',body:JSON.stringify({lock_id:lease,lock_until:new Date(Date.now()+240000).toISOString(),last_polled_at:now.toISOString()})});
  if(!claimed.length)return {state:'busy-or-paused',processed:0};
@@ -48,7 +51,7 @@ export async function runMailbox(owner:string){
   await enqueue(owner,data.value.filter((m:any)=>!m['@removed']&&typeof m.id==='string'&&m.id.length<=1500&&typeof m.receivedDateTime==='string'&&Date.parse(m.receivedDateTime)>=Date.parse(a.started_at!)).map((m:any)=>m.id),Object.fromEntries(data.value.filter((m:any)=>typeof m.id==='string'&&Number.isFinite(Date.parse(m.receivedDateTime))).map((m:any)=>[m.id,m.receivedDateTime])));
   await patch({cursor_cipher:seal(next,'cursor:'+owner)});
   const used=a.budget_date===today?a.budget_used:0;
-  if(used>=DAILY_LIMIT){await syncCategories(owner,token,lease);await patch({last_error:'Daily limit reached (300 email review attempts). Processing resumes tomorrow UTC.'});return {state:'daily-limit',processed}}
+  if(used>=DAILY_LIMIT){await syncCategories(owner,token,lease);await processDrafts(owner,token,lease,deadline);await notifyReviews(owner,lease,deadline+15000);await patch({last_error:'Daily limit reached (300 email review attempts). Processing resumes tomorrow UTC.'});return {state:'daily-limit',processed}}
   const candidates=await db('relay_review_queue',{owner_id:'eq.'+owner,status:'eq.pending',available_at:'lte.'+new Date().toISOString(),order:'created_at.asc',limit:'100'});
   const pending=candidates.filter((job:any)=>eligibleAt(job.received_at||job.created_at,workflow)).slice(0,Math.min(5,DAILY_LIMIT-used));
   const emails:ReviewEmail[]=[],jobs:any[]=[];
@@ -70,7 +73,7 @@ export async function runMailbox(owner:string){
     for(const item of result.items){await saveReview(owner,applyWorkflow(item,workflow),workflow.language,result.reviewedAt);await db('relay_review_queue',{owner_id:'eq.'+owner,message_id:'eq.'+item.email.id},{method:'PATCH',body:JSON.stringify({status:'done',last_error:null})});processed++}
    }catch(e){for(const job of jobs)await db('relay_review_queue',{owner_id:'eq.'+owner,message_id:'eq.'+job.message_id},{method:'PATCH',body:JSON.stringify({status:job.attempts+1>=3?'failed':'pending',available_at:new Date(Date.now()+300000*Math.pow(3,job.attempts)).toISOString(),last_error:e instanceof ReviewError?e.message:'Review interrupted. Retrying safely.'})});throw e}
   }
-  await syncCategories(owner,token,lease);
+  await syncCategories(owner,token,lease);await processDrafts(owner,token,lease,deadline);await notifyReviews(owner,lease,deadline+15000);
   await patch({last_success_at:new Date().toISOString(),last_error:null});return {state:'complete',processed};
  }catch(e){const error=e instanceof ReviewError?e.message:'Processing was interrupted. Relay will retry.';await patch({last_error:error,...(e instanceof ReviewError&&e.status===401?{enabled:false}:{})});return {state:e instanceof ReviewError&&e.status===401?'reconnect':'retry',processed}}
  finally{await patch({lock_id:null,lock_until:new Date(0).toISOString()})}
