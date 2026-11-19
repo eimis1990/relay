@@ -16,3 +16,6 @@ let result=applyWorkflow(item,{...defaultWorkflow,labels:[label,{...label,id:'se
 assert.equal(result.assessment.priority,'High');assert.equal(result.labels.length,2);assert.equal(item.assessment.priority,'Normal');
 result=applyWorkflow(item,{...defaultWorkflow,labels:[{...label,enabled:false}]});assert.equal(result.labels.length,0);assert.equal(result.assessment.priority,'Normal');
 console.log('PASS: local-time daily cutoffs, DST, next-day deferral, configuration validation, deterministic labels, first-match priorities, disabled rules.');
+
+assert.equal(workflowSchema.safeParse({...defaultWorkflow,draftHistory:'24months'}).success,false);
+assert.equal(workflowSchema.parse({...defaultWorkflow,draftHistory:'12months'}).draftHistory,'12months');
