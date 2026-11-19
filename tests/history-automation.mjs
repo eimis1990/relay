@@ -73,6 +73,17 @@ try{
  assert.equal(tables.relay_workflows[0].revision,1,'assistant proposals never save automatically');
  const withRules=await call('/api/outlook/review','POST',{...review,ids:['label-test']});assert.equal(withRules.status,200);
  const labeled=(await (await history()).json()).items.find(x=>x.email.id==='label-test');assert.equal(labeled.labels[0].name,'Sales');assert.equal(labeled.assessment.priority,'High');
+
+ // Daily mode must leave later mail queued without an AI call; continuous mode releases it.
+ const daily={...workflow,schedule:{mode:'daily',time:'00:00',timezone:'UTC'}};
+ await call('/api/workflow','PUT',{data:daily,revision:1});
+ Object.assign(a,{enabled:true,refresh_cipher:seal('refresh-secret','refresh:microsoft:a'),budget_used:0});
+ for(const q of tables.relay_review_queue)if(q.status==='pending')q.status='done';
+ tables.relay_review_queue.push({owner_id:'microsoft:a',message_id:'scheduled-mail',status:'pending',attempts:0,available_at:new Date(0).toISOString(),created_at:new Date().toISOString(),received_at:new Date(Date.now()+86400000).toISOString()});
+ deltaIds=[];const beforeDaily=aiCalls;await auto('check');assert.equal(aiCalls,beforeDaily,'daily cutoff must gate AI dispatch');
+ assert.equal(tables.relay_review_queue.find(x=>x.message_id==='scheduled-mail').status,'pending');
+ await call('/api/workflow','PUT',{data:workflow,revision:2});await auto('check');assert.equal(aiCalls,beforeDaily+1);
+ assert.equal(tables.relay_review_queue.find(x=>x.message_id==='scheduled-mail').status,'done');
  console.log('PASS: encrypted workflow persistence, owner isolation, revision conflicts, invalid rules rejected, AI proposal does not save, saved rules applied to reviews.');
  console.log('PASS: encrypted persistent history, tenant isolation, correction conflicts and restart, duplicate protection, queue leases, pause/resume, refresh rotation, revoked access, bounded retries, daily cap, safe delta URLs, authenticated cron, explicit offline consent.');
 }finally{await stop();mock.close();mock.closeAllConnections()}

@@ -11,6 +11,7 @@ export async function db(table:string,query:Record<string,string>={},init:Reques
   if((base.protocol!=='https:'&&!(base.protocol==='http:'&&['localhost','127.0.0.1'].includes(base.hostname)))||base.pathname!=='/'||base.username||base.password)throw new ReviewError('Invalid storage configuration.',503);
   const key=process.env.SUPABASE_SECRET_KEY!;
   const r=await fetch(new URL('/rest/v1/'+table+'?'+new URLSearchParams(query),base),{...init,headers:{apikey:key,...(!key.startsWith('sb_secret_')?{Authorization:'Bearer '+key}:{}),'Content-Type':'application/json',Prefer:prefer},cache:'no-store',signal:AbortSignal.timeout(10000)});
+  if(r.status===409)throw new ReviewError('This record changed in another tab. Reload before saving.',409);
   if(!r.ok)throw new ReviewError('Review storage is temporarily unavailable. Please retry.',503);
   return r.status===204?null:await r.json();
 }
