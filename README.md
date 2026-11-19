@@ -14,7 +14,7 @@ Node 22.13+; `npm ci`, then `npm run dev`. Open http://localhost:3000. Copy `.en
 - Read latest 25 messages from the connected user's own Inbox (sender, subject, date, preview and safe Outlook link). Only GET requests to Microsoft Graph; reading does not mark messages read.
 - Sessions expire after at most one hour. Reconnect to continue. Disconnect clears local browser session; revoke the application's consent in Microsoft to remove permission entirely.
 
-**Not implemented:** automatic sorting/labeling, background polling, full-body reader, attachments, shared mailboxes, Google OAuth/Sheets writes, Telegram pairing, billing and shared organization membership. Account setup details are preferences, not connected accounts.
+**Not implemented:** automatic sorting/labeling, background polling, attachment analysis, shared mailboxes, Google OAuth/Sheets writes, Telegram pairing, billing and shared organization membership. Account setup details are preferences, not connected accounts.
 
 ## Deploy to Vercel
 
@@ -62,3 +62,17 @@ When no database is configured, `next dev` on loopback can save `.local-data/wor
 ## Verification
 
 `npm run build` runs the production build and TypeScript checks. `npm test` checks OAuth boundaries and workspace authorization, cross-account isolation, alias-stable ownership, revision conflicts, database failure handling and persistence across Next server restarts using a local mock PostgREST server. It does not contact Microsoft or prove real database RLS. Before declaring production ready, apply the migration, inspect database access controls, and test save/reload through the live Vercel portal.
+
+## Review inbox pilot
+
+Open `/#review` after connecting Outlook. Load the latest 25 emails, select up to five, choose English or Lithuanian and optionally specify business priority rules. Confirm the data-sharing checkbox, then run Review selected. Results include company/evidence, topic, priority/reason, summary, next action, quoted deadlines and uncertainty flags. Filters, source text, local priority/topic corrections and Mark checked support human review.
+
+Set `OPENAI_API_KEY` as a sensitive Production variable in Vercel and redeploy. `OPENAI_REVIEW_MODEL` defaults to `gpt-5.4-mini`; changing it requires a model supporting Responses structured outputs and `reasoning.effort: none`. API billing is separate from ChatGPT. Each manual run sends at most five emails and has a 6,000 output-token cap. This owner-allowlisted pilot has no distributed usage quota; add tenant budgets/rate controls before opening access to customers.
+
+The server fetches selected messages only from the signed-in account's Inbox using Graph GET and plain-text preference. Only the first 8,000 characters per email, sender details, subject, date and priority rules are sent to OpenAI. Attachments and link destinations are not fetched. HTML responses fall back to preview text. Truncation, previews and attachments are clearly flagged. Model output is schema-validated, bound to requested message IDs, and company/deadline evidence must occur verbatim in the source. Email content is untrusted data; the model has no tools or write capability.
+
+OpenAI requests use `store:false`; this opts out of Responses application-state storage, not OpenAI's separate abuse-monitoring retention. Relay does not persist reviews or email bodies in Supabase, localStorage or logs. Results and manual corrections live only in React page state and disappear on reload/navigation. Nothing is sent, labelled, moved, deleted, marked read or approved in Outlook. The Microsoft permissions remain `User.Read` and `Mail.Read`.
+
+Try furniture demo reviews three explicitly fictional examples through the same AI service without reading or writing Outlook. It requires a signed-in account and the configured API key. It is not evidence of live-mailbox processing. `tests/review-boundaries.mjs` runs the real API routes with mocked Microsoft/OpenAI transports, including unsafe links, truncation, hallucinated evidence, duplicates, provider failures and auth boundaries. A real provider/mailbox smoke test is also required before demonstrating the live workflow.
+
+References: [Microsoft message GET](https://learn.microsoft.com/en-us/graph/api/message-get?view=graph-rest-1.0), [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
